@@ -177,7 +177,7 @@
 
     <div class="field">
       <label for="photoInput">Item photos</label>
-      <input type="file" id="photoInput" accept="image/*" multiple>
+      <input type="file" id="photoInput" accept="image/*,.heic,.heif" multiple>
       <div id="photoPreviews"></div>
     </div>
 
@@ -568,14 +568,50 @@ document.getElementById("saveKeyBtn").addEventListener("click", () => {
 });
 
 /* ---- Photos + compression ---- */
+/* iPhone HEIC photos aren't readable by most desktop browsers, so they're
+   converted to JPEG in the browser first (converter loads only when needed). */
+function isHeic(file) {
+  const n = (file.name || "").toLowerCase();
+  return file.type === "image/heic" || file.type === "image/heif" ||
+         n.endsWith(".heic") || n.endsWith(".heif");
+}
+function loadHeicConverter() {
+  if (window.heic2any) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Couldn't load the photo converter — check your internet connection and try again."));
+    document.head.appendChild(s);
+  });
+}
 document.getElementById("photoInput").addEventListener("change", async e => {
   const files = [...e.target.files];
   if (!files.length) return;
+  const status = document.getElementById("scanStatus");
+  status.classList.remove("err");
   pendingPhotos = [];
-  for (const f of files) pendingPhotos.push(await compressImage(f, 1200, 0.82));
+  try {
+    for (let i = 0; i < files.length; i++) {
+      let f = files[i];
+      if (isHeic(f)) {
+        status.textContent = `Converting iPhone photo ${i + 1} of ${files.length}…`;
+        await loadHeicConverter();
+        const out = await heic2any({ blob: f, toType: "image/jpeg", quality: 0.85 });
+        f = Array.isArray(out) ? out[0] : out;
+      }
+      pendingPhotos.push(await compressImage(f, 1200, 0.82));
+    }
+    status.textContent = "";
+  } catch (err) {
+    console.error(err);
+    status.classList.add("err");
+    status.textContent = "Photo problem: " + err.message;
+    pendingPhotos = [];
+  }
   const wrap = document.getElementById("photoPreviews");
   wrap.innerHTML = pendingPhotos.map(p => `<img src="${p}" alt="Preview">`).join("");
-  document.getElementById("scanBtn").disabled = false;
+  document.getElementById("scanBtn").disabled = !pendingPhotos.length;
 });
 
 function compressImage(file, maxDim, quality) {
