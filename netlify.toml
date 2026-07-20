@@ -1,0 +1,7 @@
+# Netlify configuration for the Estate Sale Catalog site
+# The site itself is plain HTML in this folder; the AI scan feature
+# runs as a serverless function in netlify/functions/.
+
+[build]
+  publish = "."
+  functions = "netlify/functions"
