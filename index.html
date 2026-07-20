@@ -465,20 +465,26 @@ document.getElementById("itemGrid").addEventListener("click", e => {
 
 /* Cross-posting: copies a formatted listing and opens the platform's create page.
    Neither Facebook Marketplace nor eBay allows direct posting from outside sites,
-   so this is the fastest legitimate workflow: paste text, upload photos, publish. */
+   so this is the fastest legitimate workflow: paste text, upload photos, publish.
+   eBay listings omit payment methods — eBay requires all payments through its own
+   checkout, and naming outside methods (cash, Zelle, etc.) violates their policy. */
 async function crossPost(item, platform) {
+  const isFb = platform === "facebook";
   const lines = [item.name, `Price: ${fmt(item.realisticPrice)}`, "", item.description];
   if (item.dimensions) lines.push("", "Dimensions: " + item.dimensions);
   if (item.condition) lines.push("Condition: " + item.condition);
-  const meet = [];
-  if (config.pickupArea) meet.push("Pickup: " + config.pickupArea);
-  if (config.payments) meet.push("Payment: " + config.payments);
-  if (meet.length) lines.push("", meet.join(" • "));
+  if (isFb) {
+    const meet = [];
+    if (config.pickupArea) meet.push("Pickup: " + config.pickupArea);
+    if (config.payments) meet.push("Payment: " + config.payments);
+    if (meet.length) lines.push("", meet.join(" • "));
+  } else if (config.pickupArea) {
+    lines.push("", "Local pickup available: " + config.pickupArea + ".");
+  }
   const text = lines.join("\n");
   let copied = true;
   try { await navigator.clipboard.writeText(text); }
   catch (e) { copied = false; prompt("Copy this listing text, then continue:", text); }
-  const isFb = platform === "facebook";
   alert((copied ? "Listing text copied to your clipboard. " : "") +
     (isFb ? "Facebook Marketplace" : "eBay") +
     " will open next — paste the text into the listing form and upload the item photos from your phone or computer.");
