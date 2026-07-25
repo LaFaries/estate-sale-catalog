@@ -38,7 +38,12 @@
   .controls select { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); font-size: .9rem; color: var(--ink); }
   .controls input:focus-visible, .controls select:focus-visible, button:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
 
-  .grid { max-width: 1080px; margin: 22px auto 40px; padding: 0 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 22px; }
+  .grid { max-width: 1080px; margin: 22px auto 40px; padding: 0 16px; }
+  .section-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 22px; }
+  .cat-section { margin: 30px 0 0; }
+  .cat-header { display: flex; align-items: baseline; gap: 10px; border-bottom: 2px solid var(--brass, #b8955a); padding-bottom: 8px; margin-bottom: 18px; }
+  .cat-header h2 { font-family: 'Libre Caslon Text', serif; font-size: 1.5rem; color: var(--green-deep, #274733); font-weight: 700; }
+  .cat-header .cnt { font-size: .9rem; color: var(--ink-soft, #8a7a54); }
 
   .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; position: relative; box-shadow: 0 2px 6px rgba(43,42,38,.06); scroll-margin-top: 20px; }
   .card.highlight { outline: 3px solid var(--brass); }
@@ -96,6 +101,9 @@
   #lbClose { top: 16px; right: 16px; }
   #lbPrev { left: 12px; top: 50%; transform: translateY(-50%); }
   #lbNext { right: 12px; top: 50%; transform: translateY(-50%); }
+  #lbRotate { bottom: 18px; left: 50%; transform: translateX(-50%); background: rgba(184,149,90,.9); }
+  #lbRotate:hover { background: var(--brass, #b8955a); }
+  #lbRotate.hidden { display: none; }
   #lbCount { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); color: #D8D2C2; font-size: .85rem; }
 
   /* Manage panel */
@@ -123,7 +131,11 @@
   .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
   .btn[disabled] { opacity: .5; cursor: default; }
   #photoPreviews { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  #photoPreviews img { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+  #photoPreviews .preview-item { position: relative; }
+  #photoPreviews img { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; }
+  #photoPreviews .rotate-btn { position: absolute; right: 3px; bottom: 3px; width: 26px; height: 26px; border-radius: 50%; border: none; background: rgba(43,42,38,.82); color: #fff; font-size: 15px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+  #photoPreviews .rotate-btn:hover { background: var(--green-deep, #274733); }
+  #photoPreviews .rotate-btn:disabled { opacity: .5; cursor: default; }
   #scanStatus { font-size: .88rem; margin-top: 8px; color: var(--green-deep); min-height: 1.2em; }
   #scanStatus.err { color: var(--tag-red); }
 
@@ -262,6 +274,7 @@
   <button class="lb-btn" id="lbPrev" aria-label="Previous photo">‹</button>
   <img id="lbImg" alt="Item photo">
   <button class="lb-btn" id="lbNext" aria-label="Next photo">›</button>
+  <button class="lb-btn" id="lbRotate" aria-label="Rotate photo 90 degrees" title="Rotate 90° (saves)">⟲</button>
   <div id="lbCount"></div>
 </div>
 
@@ -304,11 +317,23 @@ let adminOn = false;
 let editingId = null;
 let pendingPhotos = [];
 
+let storageWarned = false;
 function persist() {
   try {
     localStorage.setItem(LS_DATA, JSON.stringify(catalog));
     localStorage.setItem(LS_CFG, JSON.stringify(config));
-  } catch (e) { alert("Couldn't save in this browser (storage may be full — large photos take space). Download items-data.js now as a backup."); }
+    storageWarned = false;
+  } catch (e) {
+    /* Catalog is larger than this browser's storage limit (~5MB) — common once
+       there are many photos. Changes still live in memory and export correctly
+       when you Download items-data.js, so we don't block the edit. Warn once. */
+    try { localStorage.setItem(LS_CFG, JSON.stringify(config)); } catch (_) {}
+    if (!storageWarned) {
+      storageWarned = true;
+      const s = document.getElementById("scanStatus");
+      if (s) { s.classList.remove("err"); s.textContent = "Your catalog is too large to auto-save in the browser. Your changes are kept here — click “Download items-data.js” and re-deploy to make them permanent."; }
+    }
+  }
   buildFilters(); render(); renderTerms();
 }
 
@@ -348,37 +373,10 @@ function interestLinks(i) {
   return links.join("");
 }
 
-function render() {
-  const q = document.getElementById("searchBox").value.toLowerCase();
-  const cat = document.getElementById("filterCategory").value;
-  const plat = document.getElementById("filterPlatform").value;
-  const st = document.getElementById("filterStatus").value;
-  const sort = document.getElementById("sortBy").value;
-
-  let list = catalog.filter(i =>
-    (!q || ((i.name || "") + " " + (i.description || "")).toLowerCase().includes(q)) &&
-    (!cat || i.category === cat) &&
-    (!plat || i.platform === plat) &&
-    (!st || i.status === st)
-  );
-  if (sort === "high") list.sort((a, b) => (b.realisticPrice||0) - (a.realisticPrice||0));
-  else if (sort === "low") list.sort((a, b) => (a.realisticPrice||0) - (b.realisticPrice||0));
-  else list.sort((a, b) => (a.name||"").localeCompare(b.name||""));
-
-  const grid = document.getElementById("itemGrid");
-  if (catalog.length === 0) {
-    grid.innerHTML = `<div class="empty"><h2>No items cataloged yet</h2><p>Open “Manage catalog” below to add your first item.</p></div>`;
-    summarize(); return;
-  }
-  if (list.length === 0) {
-    grid.innerHTML = `<div class="empty"><h2>No matches</h2><p>Try clearing the search or filters.</p></div>`;
-    summarize(); return;
-  }
-
-  grid.innerHTML = list.map(i => {
-    const sold = i.status === "sold";
-    const photos = i.images || [];
-    return `
+function adminCardHTML(i) {
+  const sold = i.status === "sold";
+  const photos = i.images || [];
+  return `
     <article class="card ${sold ? "is-sold" : ""}" id="${i.id}">
       ${i.status !== "available" ? `<span class="status ${i.status}">${i.status}</span>` : ""}
       ${photos.length
@@ -415,7 +413,52 @@ function render() {
         </div>` : ""}
       </div>
     </article>`;
-  }).join("");
+}
+
+function slug(s){ return "cat-" + String(s).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,""); }
+
+function render() {
+  const q = document.getElementById("searchBox").value.toLowerCase();
+  const cat = document.getElementById("filterCategory").value;
+  const plat = document.getElementById("filterPlatform").value;
+  const st = document.getElementById("filterStatus").value;
+  const sort = document.getElementById("sortBy").value;
+
+  let list = catalog.filter(i =>
+    (!q || ((i.name || "") + " " + (i.description || "")).toLowerCase().includes(q)) &&
+    (!cat || i.category === cat) &&
+    (!plat || i.platform === plat) &&
+    (!st || i.status === st)
+  );
+
+  const grid = document.getElementById("itemGrid");
+  if (catalog.length === 0) {
+    grid.innerHTML = `<div class="empty"><h2>No items cataloged yet</h2><p>Open “Manage catalog” below to add your first item.</p></div>`;
+    summarize(); return;
+  }
+  if (list.length === 0) {
+    grid.innerHTML = `<div class="empty"><h2>No matches</h2><p>Try clearing the search or filters.</p></div>`;
+    summarize(); return;
+  }
+
+  /* Sort comparator for within a section */
+  const cmp = (a, b) => {
+    if (sort === "high") return (b.realisticPrice||0) - (a.realisticPrice||0);
+    if (sort === "low")  return (a.realisticPrice||0) - (b.realisticPrice||0);
+    return (a.name||"").localeCompare(b.name||"");
+  };
+
+  /* Group the filtered list by category */
+  const groups = {};
+  list.forEach(i => { const c = i.category || "Other / Misc"; (groups[c] = groups[c] || []).push(i); });
+  const cats = Object.keys(groups).sort((a,b) =>
+    groups[b].length - groups[a].length || a.localeCompare(b));
+
+  grid.innerHTML = cats.map(c => `
+    <section class="cat-section" id="admin-${slug(c)}">
+      <div class="cat-header"><h2>${esc(c)}</h2><span class="cnt">${groups[c].length} item${groups[c].length>1?"s":""}</span></div>
+      <div class="section-grid">${groups[c].slice().sort(cmp).map(adminCardHTML).join("")}</div>
+    </section>`).join("");
   summarize();
 }
 
@@ -504,11 +547,12 @@ async function shareItem(id) {
 }
 
 /* ================= Lightbox ================= */
-let lbPhotos = [], lbIndex = 0;
+let lbPhotos = [], lbIndex = 0, lbItemId = null;
 const lightbox = document.getElementById("lightbox");
 function openLightbox(itemId) {
   const item = catalog.find(i => i.id === itemId);
   if (!item || !item.images?.length) return;
+  lbItemId = itemId;
   lbPhotos = item.images; lbIndex = 0;
   updateLightbox();
   lightbox.classList.add("open");
@@ -519,10 +563,32 @@ function updateLightbox() {
   const multi = lbPhotos.length > 1;
   document.getElementById("lbPrev").style.display = multi ? "flex" : "none";
   document.getElementById("lbNext").style.display = multi ? "flex" : "none";
+  /* Rotate button only in Manage mode */
+  document.getElementById("lbRotate").classList.toggle("hidden", !adminOn);
 }
 document.getElementById("lbClose").addEventListener("click", () => lightbox.classList.remove("open"));
 document.getElementById("lbPrev").addEventListener("click", () => { lbIndex = (lbIndex - 1 + lbPhotos.length) % lbPhotos.length; updateLightbox(); });
 document.getElementById("lbNext").addEventListener("click", () => { lbIndex = (lbIndex + 1) % lbPhotos.length; updateLightbox(); });
+
+/* Rotate the current photo 90° and save it back to the item */
+document.getElementById("lbRotate").addEventListener("click", async () => {
+  const item = catalog.find(i => i.id === lbItemId);
+  if (!item || !item.images?.length) return;
+  const btn = document.getElementById("lbRotate");
+  btn.disabled = true;
+  try {
+    const rotated = await rotateDataUrl(item.images[lbIndex]);
+    item.images[lbIndex] = rotated;   // update the actual stored photo
+    lbPhotos = item.images;
+    persist();                         // save to storage + re-render grid
+    updateLightbox();                  // refresh the enlarged view
+  } catch (err) {
+    console.error(err);
+    alert("Couldn't rotate that photo — try again.");
+  } finally {
+    btn.disabled = false;
+  }
+});
 lightbox.addEventListener("click", e => { if (e.target === lightbox) lightbox.classList.remove("open"); });
 document.addEventListener("keydown", e => {
   if (!lightbox.classList.contains("open")) return;
@@ -614,7 +680,7 @@ document.getElementById("photoInput").addEventListener("change", async e => {
     pendingPhotos = [];
   }
   const wrap = document.getElementById("photoPreviews");
-  wrap.innerHTML = pendingPhotos.map(p => `<img src="${p}" alt="Preview">`).join("");
+  renderPhotoPreviews();
   document.getElementById("scanBtn").disabled = !pendingPhotos.length;
 });
 
@@ -633,6 +699,53 @@ function compressImage(file, maxDim, quality) {
     img.src = URL.createObjectURL(file);
   });
 }
+
+/* ---- Rotate a photo's actual pixels 90° clockwise ----
+   Rewrites the pixels (not just an orientation tag), so the rotation
+   sticks through saving, publishing, and re-display. */
+function rotateDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.height;   // swap dimensions
+      canvas.height = img.width;
+      const ctx = canvas.getContext("2d");
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(Math.PI / 2);      // 90° clockwise
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => reject(new Error("Couldn't rotate that image."));
+    img.src = dataUrl;
+  });
+}
+
+/* Re-draw the preview thumbnails, each with a rotate button */
+function renderPhotoPreviews() {
+  const wrap = document.getElementById("photoPreviews");
+  wrap.innerHTML = pendingPhotos.map((p, idx) =>
+    `<div class="preview-item">
+       <img src="${p}" alt="Preview">
+       <button type="button" class="rotate-btn" data-rotate="${idx}" title="Rotate 90°" aria-label="Rotate photo 90 degrees">⟲</button>
+     </div>`).join("");
+}
+
+/* Rotate button clicks (delegated) */
+document.getElementById("photoPreviews").addEventListener("click", async e => {
+  const btn = e.target.closest("[data-rotate]");
+  if (!btn) return;
+  const idx = +btn.dataset.rotate;
+  btn.disabled = true;
+  try {
+    pendingPhotos[idx] = await rotateDataUrl(pendingPhotos[idx]);
+    renderPhotoPreviews();
+  } catch (err) {
+    console.error(err);
+    alert("Couldn't rotate that photo — try again.");
+    btn.disabled = false;
+  }
+});
 
 /* ---- AI scan ---- */
 document.getElementById("scanBtn").addEventListener("click", async () => {
@@ -751,10 +864,12 @@ function loadIntoForm(item) {
   document.getElementById("fPlatform").value = item.platform || "";
   document.getElementById("fReason").value = item.platformReason || "";
   document.getElementById("fStatus").value = item.status || "available";
-  pendingPhotos = [];
-  document.getElementById("photoPreviews").innerHTML = (item.images || []).map(p => `<img src="${p}" alt="Current photo">`).join("");
-  document.getElementById("scanBtn").disabled = true;
-  document.getElementById("scanStatus").textContent = (item.images || []).length ? "Current photos shown. Choosing new photos replaces all of them." : "";
+  /* Load existing photos as editable, rotatable previews (not just static thumbnails),
+     so photos can be rotated in place without re-uploading. */
+  pendingPhotos = (item.images || []).slice();
+  renderPhotoPreviews();
+  document.getElementById("scanBtn").disabled = !pendingPhotos.length;
+  document.getElementById("scanStatus").textContent = pendingPhotos.length ? "Tap ⟲ under a photo to rotate it. Choosing new photos replaces all of them." : "";
 }
 
 function clearForm() {
