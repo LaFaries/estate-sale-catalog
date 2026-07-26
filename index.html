@@ -283,9 +283,53 @@
 <script src="items-data.js"></script>
 <script>
 /* ================= State ================= */
-const LS_DATA = "estateCatalog";
-const LS_CFG  = "estateConfig";
-const LS_KEY  = "estateApiKey";
+const LS_DATA = "estateCatalog";   // legacy localStorage key (used once for migration)
+const LS_CFG  = "estateConfig";    // legacy localStorage key (used once for migration)
+const LS_KEY  = "estateApiKey";    // API key stays in localStorage (tiny)
+
+/* ============================================================
+   IndexedDB storage — holds the full catalog with embedded
+   photos (hundreds of MB capacity) so auto-save works reliably
+   at any catalog size. Replaces localStorage, which capped at
+   ~5MB and silently failed once photos filled it up.
+   ============================================================ */
+const IDB_NAME = "estateDB";
+const IDB_STORE = "kv";
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readonly");
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbSet(key, val) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbDel(key) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 function normalize(items) {
   return items.map(i => {
@@ -295,45 +339,70 @@ function normalize(items) {
     return copy;
   });
 }
-function loadCatalog() {
+
+const bundledCatalog = () =>
+  (typeof ITEMS !== "undefined") ? normalize(JSON.parse(JSON.stringify(ITEMS))) : [];
+const bundledConfig = () =>
+  (typeof SITE_CONFIG !== "undefined") ? { ...SITE_CONFIG } : {};
+
+/* Async load: IndexedDB → (one-time migrate from localStorage) → bundled file */
+async function loadCatalogAsync() {
   try {
-    const saved = localStorage.getItem(LS_DATA);
-    if (saved) return normalize(JSON.parse(saved));
+    const saved = await idbGet(LS_DATA);
+    if (saved) return normalize(saved);
+  } catch (e) { console.error("idb read failed", e); }
+  /* One-time migration: if old data sits in localStorage, adopt it */
+  try {
+    const legacy = localStorage.getItem(LS_DATA);
+    if (legacy) {
+      const parsed = normalize(JSON.parse(legacy));
+      idbSet(LS_DATA, parsed).catch(()=>{});   // move it into IndexedDB
+      return parsed;
+    }
   } catch (e) { console.error(e); }
-  return (typeof ITEMS !== "undefined") ? normalize(JSON.parse(JSON.stringify(ITEMS))) : [];
+  return bundledCatalog();
 }
-function loadConfig() {
-  const base = (typeof SITE_CONFIG !== "undefined") ? { ...SITE_CONFIG } : {};
+async function loadConfigAsync() {
+  const base = bundledConfig();
   try {
-    const saved = localStorage.getItem(LS_CFG);
-    if (saved) return { ...base, ...JSON.parse(saved) };
+    const saved = await idbGet(LS_CFG);
+    if (saved) return { ...base, ...saved };
+  } catch (e) { console.error(e); }
+  try {
+    const legacy = localStorage.getItem(LS_CFG);
+    if (legacy) { const c = { ...base, ...JSON.parse(legacy) }; idbSet(LS_CFG, c).catch(()=>{}); return c; }
   } catch (e) { console.error(e); }
   return base;
 }
 
-let catalog = loadCatalog();
-let config = loadConfig();
+/* Start from the bundled file; the async loader swaps in saved data at init */
+let catalog = bundledCatalog();
+let config = bundledConfig();
 let adminOn = false;
 let editingId = null;
 let pendingPhotos = [];
 
 let storageWarned = false;
 function persist() {
-  try {
-    localStorage.setItem(LS_DATA, JSON.stringify(catalog));
-    localStorage.setItem(LS_CFG, JSON.stringify(config));
-    storageWarned = false;
-  } catch (e) {
-    /* Catalog is larger than this browser's storage limit (~5MB) — common once
-       there are many photos. Changes still live in memory and export correctly
-       when you Download items-data.js, so we don't block the edit. Warn once. */
-    try { localStorage.setItem(LS_CFG, JSON.stringify(config)); } catch (_) {}
-    if (!storageWarned) {
-      storageWarned = true;
-      const s = document.getElementById("scanStatus");
-      if (s) { s.classList.remove("err"); s.textContent = "Your catalog is too large to auto-save in the browser. Your changes are kept here — click “Download items-data.js” and re-deploy to make them permanent."; }
-    }
-  }
+  /* Save to IndexedDB (async, plenty of room). Store plain objects. */
+  idbSet(LS_DATA, JSON.parse(JSON.stringify(catalog)))
+    .then(() => {
+      idbSet(LS_CFG, JSON.parse(JSON.stringify(config))).catch(()=>{});
+      if (storageWarned) {
+        storageWarned = false;
+        const s = document.getElementById("scanStatus");
+        if (s) s.textContent = "";
+      }
+    })
+    .catch(e => {
+      console.error("idb save failed", e);
+      if (!storageWarned) {
+        storageWarned = true;
+        const s = document.getElementById("scanStatus");
+        if (s) { s.classList.remove("err"); s.textContent = "Couldn't auto-save in this browser. Your changes are kept here — click “Download items-data.js” and re-deploy to make them permanent."; }
+      }
+    });
+  /* Re-render immediately; the save runs in the background. */
   buildFilters(); render(); renderTerms();
 }
 
@@ -410,6 +479,7 @@ function adminCardHTML(i) {
         <div class="admin-actions">
           <button data-act="listfb" data-id="${i.id}">➦ List on Facebook</button>
           <button data-act="listebay" data-id="${i.id}">➦ List on eBay</button>
+          <button data-act="listetsy" data-id="${i.id}">➦ List on Etsy</button>
         </div>` : ""}
       </div>
     </article>`;
@@ -499,6 +569,8 @@ document.getElementById("itemGrid").addEventListener("click", e => {
     }
   } else if (btn.dataset.act === "listfb" || btn.dataset.act === "listebay") {
     crossPost(item, btn.dataset.act === "listfb" ? "facebook" : "ebay");
+  } else if (btn.dataset.act === "listetsy") {
+    crossPost(item, "etsy");
   } else if (btn.dataset.act === "edit") {
     loadIntoForm(item);
     if (!adminOn) toggleManage();
@@ -513,6 +585,36 @@ document.getElementById("itemGrid").addEventListener("click", e => {
    checkout, and naming outside methods (cash, Zelle, etc.) violates their policy. */
 async function crossPost(item, platform) {
   const isFb = platform === "facebook";
+  const isEtsy = platform === "etsy";
+
+  if (isEtsy) {
+    /* Etsy: title (max 140 chars), description, price, and up to 13 tags. */
+    const title = item.name.slice(0, 140);
+    const lines = [
+      "TITLE:", title, "",
+      "PRICE: " + fmt(item.realisticPrice), "",
+      "DESCRIPTION:", item.description
+    ];
+    if (item.condition) lines.push("", "Condition: " + item.condition);
+    if (item.dimensions) lines.push("Dimensions: " + item.dimensions);
+    if (config.pickupArea) lines.push("", "Local pickup available in " + config.pickupArea + "; shipping quoted on request.");
+    /* Suggested tags from category + name words */
+    const stop = new Set(["the","and","with","for","a","an","of","in","on","no","to"]);
+    const words = (item.name + " " + (item.category || "")).toLowerCase()
+      .replace(/[^a-z0-9 ]/g, " ").split(/\s+/)
+      .filter(w => w.length > 2 && !stop.has(w));
+    const tags = [...new Set(words)].slice(0, 13);
+    lines.push("", "SUGGESTED TAGS: " + tags.join(", "));
+    const text = lines.join("\n");
+    let copied = true;
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) { copied = false; prompt("Copy this listing text, then continue:", text); }
+    alert((copied ? "Etsy listing text copied to your clipboard. " : "") +
+      "Etsy's Create-a-listing page will open next — paste the text into the listing form, add photos, set the price and tags. (Etsy fits genuine vintage/handmade items best.)");
+    window.open("https://www.etsy.com/your/shops/me/listings/create", "_blank");
+    return;
+  }
+
   const lines = [item.name, `Price: ${fmt(item.realisticPrice)}`, "", item.description];
   if (item.dimensions) lines.push("", "Dimensions: " + item.dimensions);
   if (item.condition) lines.push("Condition: " + item.condition);
@@ -956,12 +1058,12 @@ document.getElementById("importInput").addEventListener("change", e => {
   reader.readAsText(file);
 });
 
-document.getElementById("resetBtn").addEventListener("click", () => {
+document.getElementById("resetBtn").addEventListener("click", async () => {
   if (confirm("Discard the changes saved in this browser and go back to the data currently published in items-data.js?")) {
-    localStorage.removeItem(LS_DATA);
-    localStorage.removeItem(LS_CFG);
-    catalog = loadCatalog();
-    config = loadConfig();
+    try { await idbDel(LS_DATA); await idbDel(LS_CFG); } catch (e) { console.error(e); }
+    try { localStorage.removeItem(LS_DATA); localStorage.removeItem(LS_CFG); } catch (e) {}
+    catalog = bundledCatalog();
+    config = bundledConfig();
     persist();
     fillConfigForm();
   }
@@ -970,20 +1072,30 @@ document.getElementById("resetBtn").addEventListener("click", () => {
 /* ================= Init ================= */
 ["searchBox","filterCategory","filterPlatform","filterStatus","sortBy"].forEach(id =>
   document.getElementById(id).addEventListener("input", render));
-buildFilters();
-fillConfigForm();
-render();
-renderTerms();
 
-/* Deep link: #item-id scrolls to and highlights that card */
-if (location.hash) {
-  const el = document.getElementById(location.hash.slice(1));
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("highlight");
-    setTimeout(() => el.classList.remove("highlight"), 4000);
+/* Load saved catalog from IndexedDB (or migrate/bundle), then render */
+(async function initData() {
+  try {
+    catalog = await loadCatalogAsync();
+    config = await loadConfigAsync();
+  } catch (e) {
+    console.error("load failed, using bundled data", e);
   }
-}
+  buildFilters();
+  fillConfigForm();
+  render();
+  renderTerms();
+
+  /* Deep link: #item-id scrolls to and highlights that card */
+  if (location.hash) {
+    const el = document.getElementById(location.hash.slice(1));
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("highlight");
+      setTimeout(() => el.classList.remove("highlight"), 4000);
+    }
+  }
+})();
 </script>
 </body>
 </html>
