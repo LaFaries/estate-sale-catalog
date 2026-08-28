@@ -35,7 +35,8 @@ export default async (req) => {
       headers: {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01"
+        "anthropic-version": "2023-06-01",
+        "anthropic-workspace-id": "wrkspc_0136Cgf8Thhy8ND8v9Ubw5Fo"
       },
       body: JSON.stringify({
         model: "claude-sonnet-5",
